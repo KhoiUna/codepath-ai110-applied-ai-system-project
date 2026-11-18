@@ -1,17 +1,12 @@
-# 🎵 Music Recommender Simulation
+# 🎵 Music Recommender with RAG "Ask the DJ" Mode
 
 ## Project Summary
 
-In this project you will build and explain a small music recommender system.
+**Original project (Modules 1–3): _Music Recommender Simulation_.** It was a content-based recommender that ranks a 15-song catalog against a fixed taste profile (genre, mood, target energy, acoustic preference). It uses a transparent, weighted scoring rule. Each recommendation came with a score and a "why" list, so the project was a way to explore how recommenders turn data into rankings and where bias creeps in.
 
-Your goal is to:
+**What it does now:** you describe what you want in plain English, such as _"something sad and reflective for a rainy evening"_, and the app answers with grounded recommendations. Claude turns the request into a taste profile, and the original scorer **retrieves** the best-matching songs plus genre/mood notes. Claude then explains its picks **using only that retrieved data**, and a grounding check rejects any song that isn't in the retrieved set.
 
-- Represent songs and a user "taste profile" as data
-- Design a scoring rule that turns that data into recommendations
-- Evaluate what your system gets right and wrong
-- Reflect on how this mirrors real world AI recommenders
-
-Replace this paragraph with your own summary of what your version does.
+**Why it matters:** the language model makes the app easy to use, while the deterministic retriever and the verification step keep the answers factual. They stop it from recommending songs that don't exist in the catalog. This is the core pattern behind trustworthy LLM features in production.
 
 ---
 
@@ -150,14 +145,99 @@ pytest
 
 ---
 
-## Sample Recommendation Output
+## Architecture Overview
 
-Paste a sample of your recommender's output here as a text block so a reader can see what it produces:
+The full diagram is in [`diagrams/system_architecture.mmd`](diagrams/system_architecture.mmd) (Mermaid source).
+
+- **Input:** the user's request, the song catalog (`data/songs.csv`), and the knowledge base (`data/genre_notes.md`).
+- **Parser (Claude):** maps the request onto catalog labels. A keyword parser is the backup, and `sanitize_profile` is a guardrail on the result.
+- **Retriever:** the original `recommend_songs`/`score_song` engine picks the top-k songs with reasons, and `retrieve_notes` adds the matching knowledge-base entries.
+- **Generator (Claude):** writes the picks and reasons from the retrieved context only.
+- **Evaluator:** `check_grounding` confirms every pick was retrieved. It allows one corrective retry, then falls back to the deterministic scorer.
+- **Output:** the terminal answer plus `logs/app.log`.
+- **Human and testing checks:** `pytest` (with Claude mocked) checks the guardrails, grounding and fallbacks. A developer reviews the logs and output, and the user judges whether the picks fit.
+
+---
+
+## Sample Interactions
+
+These are real outputs from `python -m src.main --ask "..."` using `claude-opus-5-5`, with the profile header trimmed.
+
+**1. "upbeat songs for the gym"** → parsed as `edm / intense / energy 0.90 / non-acoustic`
 
 ```
-Loading songs from data/songs.csv...
-Loaded 15 songs.
+🤖 High-energy, driving tracks to power your workout, led by intense rock and pop picks
+   with EDM, metal, and an upbeat pop closer for variety.
+1. Storm Runner — Voltline (score 4.43)
+   Its intense mood and 0.91 energy nearly hit the target exactly, and its loud, driving
+   rock sound is built for pushing through a hard set.
+2. Gym Hero — Max Pulse (score 4.42)
+   This hook-driven pop track pairs an intense, high-adrenaline mood with 0.93 energy...
+3. Neon Horizon — Pulse Theory (score 3.36)
+   An EDM track with big drops and 0.96 energy...
+Sources: songs.csv scorer + notes on edm, intense, rock, pop, euphoric, metal, angry, happy
+```
 
+**2. "calm acoustic music for late-night studying"** → `lofi / focused / energy 0.25 / acoustic`
+
+```
+🤖 For calm, acoustic late-night studying, these picks lean on low-energy lofi and ambient
+   tracks that keep you focused without demanding attention, plus a highly acoustic classical option.
+1. Focus Flow — LoRoom (score 5.09)
+   Its focused mood and lofi genre both match the request, and its steady, unobtrusive feel...
+2. Library Rain — Paper Lanterns (score 3.23)
+   A chill lofi track with soft, warm textures and high acousticness (0.86)...
+5. Winter Sonata — Elena Marsh (score 2.42)
+   ...very high acousticness (0.97) fit a calm acoustic session, though its melancholic
+   mood is more emotional than focused.
+```
+
+**3. "something sad and reflective for a rainy evening"** → `any genre / melancholic / energy 0.25 / acoustic`
+
+```
+🤖 Only "Winter Sonata" truly matches the sad, reflective mood you asked for; the other picks
+   are calm and low-key rather than sad, so they work as gentle companions for a rainy evening.
+1. Winter Sonata — Elena Marsh (score 4.42)
+   It's the only melancholic match, a wistful, highly acoustic classical piece at very low energy...
+2. Spacewalk Thoughts — Orbit Bloom (score 2.40)
+   ...though its mood is chill rather than sad.
+```
+
+Example 3 shows the RAG benefit: the AI is honest about the catalog's limits (only one melancholic song) instead of inventing sad songs. When the API was unreachable (for example, with no credits), the same command printed a warning and the deterministic scorer ranking instead of crashing.
+
+---
+
+## Design Decisions
+
+- **Reuse the original scorer as the retriever.** Retrieval stays transparent and testable, and it is the same logic documented in the Algorithm Recipe. The trade-off is that retrieval quality is capped by the simple scoring rule.
+- **The LLM only translates and explains; it does not rank.** Constrained JSON output, with genre/mood enums built from the catalog, keeps Claude's profile compatible with `score_song`. A post-generation grounding check catches hallucinated songs.
+- **Structured output instead of free text.** Picks come back as `{title, reason}` JSON, so grounding is an exact title check rather than fuzzy text matching.
+- **Graceful degradation over hard failure.** No key, an API error, a refusal or bad JSON all fall back to the deterministic recommender. The trade-off is that the user may get a less personalized answer, but always gets one.
+- **Small Markdown knowledge base** (`genre_notes.md`). It is easy to read and edit, and keyword retrieval is enough for 23 labels. A larger catalog would need embeddings.
+- **Trade-off accepted:** Claude may reorder the retrieved songs. In example 2 it ranked _Spacewalk Thoughts_ (2.40) above _Midnight Coding_ (3.02). The system allows this because the reasons stay grounded, but the scores shown can look out of order.
+
+---
+
+## Testing Summary
+
+- **16 automated tests pass** (`pytest`, about 1 second, no network):
+  - input guardrails (empty or over 500-character queries)
+  - profile sanitization (unknown labels, out-of-range energy)
+  - keyword fallback parsing
+  - knowledge-base coverage of every catalog label
+  - a full pipeline run with a mocked Claude
+  - a hallucinated song triggering a retry
+  - repeated hallucination falling back to the scorer
+  - API errors not crashing the app
+- **Manual runs** with a real key produced grounded answers on the first attempt (the logs show `ungrounded=[]`).
+- **What didn't work at first:** a live run failed with `400 credit balance too low`. The fallback path handled it correctly, and the error was logged with its request ID, which confirmed that the guardrails work in practice.
+- **What I learned:** mocking the LLM client makes AI code testable and deterministic. The most valuable tests cover failure paths, not the happy path.
+
+---
+
+## Sample Output: Profile Demo Mode (`python -m src.main`)
+
+```
 ================================================================
   🎵  MUSIC RECOMMENDER
 ================================================================
@@ -207,9 +287,6 @@ Loaded 15 songs.
 Multiple profiles:
 
 ```
-Loading songs from data/songs.csv...
-Loaded 15 songs.
-
 === High-Energy Pop ===
 ================================================================
   🎵  MUSIC RECOMMENDER
@@ -374,11 +451,6 @@ You will go deeper on this in your model card.
 
 ## Reflection
 
-Read and complete `model_card.md`:
+This project taught me that an LLM is most reliable when it isn't trusted on its own. Pairing it with a deterministic retriever, a schema, and a verification step turned a "creative" model into a dependable feature. Building the fallbacks first also made the system resilient to real failures, such as running out of API credits. Finally, the AI's answers made the catalog's biases visible (for example, only one melancholic song), which is a reminder that a recommender can only be as fair as its data.
 
-[**Model Card**](model_card.md)
-
-Write 1 to 2 paragraphs here about what you learned:
-
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+The full responsible-AI reflection is in the [**Model Card**](model_card.md): how I collaborated with AI, the suggestions I accepted and rejected, and the system's limitations.
