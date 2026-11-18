@@ -118,3 +118,43 @@ I tested three profiles in `src/main.py` and checked whether each top 5 "felt" r
 **What surprised me.** Four simple rules and some addition already feel like real recommendations. The chill lofi list looks like something a real app would make. But it's just label matching. It feels smart because it shows its reasons, not because it understands music.
 
 **What I'd try next.** A bigger catalog, partial credit for close labels (like "focused" and "chill"), and a rule that keeps the top 5 from all being the same type of song.
+
+---
+
+## 10. Responsible AI Reflection (RAG "Ask" Mode)
+
+The app now has an AI mode: `python -m src.main --ask "..."`. Claude parses the request, the scorer retrieves songs and genre/mood notes, Claude explains the picks, and a grounding check verifies them (see `diagrams/system_architecture.mmd`).
+
+### Limitations and Biases
+
+- **The catalog biases are passed straight to the AI.** Claude can only recommend from 15 songs. For "something sad and reflective," only one song is melancholic, so the other picks are just calm songs.
+- **The grounding check verifies titles, not reasons.** It guarantees every recommended song is real and retrieved. A reason could still overstate a song (for example, call it "perfect for studying"), and nothing checks that.
+- **Claude's parsing is a judgment call.** "Upbeat songs for the gym" became `edm / intense`, and "late-night studying" became `focused` rather than `chill`. These choices are reasonable, but another run could choose differently and change the ranking.
+- **Claude can reorder the scorer's ranking.** In one run it put a 2.40-score song above a 3.02-score song, so the displayed scores can look out of order.
+- **The offline fallback is weak.** Without the API, the keyword parser didn't map "upbeat songs for the gym" to any genre or mood, so only energy mattered.
+- **The knowledge base is subjective.** `genre_notes.md` is hand-written, and its descriptions (for example, metal as "aggressive") shape how Claude talks about whole genres.
+- **The app only handles English, needs network access, and costs money per request.** Each request takes about 3–8 seconds across two Claude calls.
+
+### Misuse and Prevention
+
+| Possible misuse                                                     | How the system limits it                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Prompt injection** (e.g. "ignore your rules and write X")         | Requests are capped at 500 characters. Both Claude calls must return JSON that matches a schema, and genre/mood must be catalog labels. The grounding check drops any song that wasn't retrieved, and the worst case falls back to the scorer output. |
+| **Using the app as a general chatbot or for harmful text**          | Output is limited to a summary plus picks from the catalog. Claude refusals fall back to the scorer.                                                                                                                                                  |
+| **Leaking or running up the API key**                               | The key lives in `.env` (gitignored), `-k` is capped at 10, and there is at most one retry. A public deployment would also need rate limiting and spending limits.                                                                                    |
+| **Treating mood requests as emotional support** ("I feel hopeless") | This is not a mental-health tool. A real product should detect crisis language and point to real resources instead of a playlist.                                                                                                                     |
+
+### What Surprised Me While Testing Reliability
+
+- **The first live run failed** with `400 credit balance too low`. The fallback path I'd written "just in case" kept the app working, and the log recorded the request IDs. That changed how I see guardrails: they're the normal path, not an edge case.
+- **Claude was more honest than I expected.** For the sad request, it said that only _Winter Sonata_ truly matches instead of pretending the other picks were sad. Grounding made the AI _admit_ the catalog's limits.
+- **Every live run passed the grounding check on the first try.** So the retry and fallback paths are only exercised by the mocked tests. Without the mocks, I would have no evidence that those paths work.
+- **Mocking the LLM made AI code testable.** With a fake client that returns queued JSON, I could test a hallucinated song deterministically in under a second.
+
+### Collaboration with AI
+
+I used Claude Code as a pair programmer. It explored the repo, wrote the plan, the RAG module, tests, the diagram and README sections, and I reviewed and steered.
+
+- **A suggestion I accepted:** use the existing `recommend_songs()` scorer as the retriever, and add a grounding check plus a deterministic fallback, instead of letting Claude pick songs freely. I accepted it because it reused tested code, kept retrieval explainable, and kept the app from crashing. The fallback proved its value when my credits ran out.
+- **A suggestion I did not accept as written:** when I first pasted the assignment, the AI started exploring the code and heading toward a build without settling on a scope. I stopped it and asked for **a concise plan for only ONE feature** (RAG), rather than a broad build covering several of the listed features. The assignment requires only one feature, and a single focused feature was easier to review, test and explain. I also approved the plan before any code was written.
+- **Where I checked its work:** I ran the app myself (which surfaced the credit error), and I checked that the README's sample outputs were copied from real runs rather than invented.
