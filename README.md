@@ -97,21 +97,56 @@ I tested this against the common starting recipe (+2.0 genre, +1.0 mood, energy 
 pip install -r requirements.txt
 ```
 
-3. Run the app:
+3. (Optional, for AI mode) Add your Anthropic API key:
 
 ```bash
-python -m src.main
+cp .env.example .env      # then edit .env and set ANTHROPIC_API_KEY=...
+# or: export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Without a key, `--ask` still works. It runs offline with a keyword parser and the plain scorer output, and prints a warning.
+
+4. Run the app (always from the project root):
+
+```bash
+python -m src.main                                              # demo with 3 fixed taste profiles
+python -m src.main --ask "calm acoustic music for late-night studying"   # RAG mode
+python -m src.main --ask "upbeat songs for the gym" -k 3 -v     # top 3, show logs on console
 ```
 
 ### Running Tests
-
-Run the starter tests with:
 
 ```bash
 pytest
 ```
 
-You can add more tests in `tests/test_recommender.py`.
+`tests/test_rag.py` mocks Claude, so the tests need no network access and no API key.
+
+---
+
+## AI Feature: Retrieval-Augmented Generation ("Ask" mode)
+
+`--ask` lets you describe what you want in plain English. Claude only writes its answer from songs and notes that the app **retrieved** first (`src/rag.py`):
+
+```
+"calm music for studying"
+   │
+   ▼ 1. PARSE     Claude → taste profile (JSON schema; genre/mood enums = catalog labels)
+   │              guardrail: re-validate, clamp energy 0–1, drop unknown labels
+   ▼ 2. RETRIEVE  existing scorer (recommend_songs) → top-k songs + reasons
+   │              + matching entries from data/genre_notes.md (knowledge base)
+   ▼ 3. GENERATE  Claude writes picks + reasons using ONLY the retrieved context
+   ▼ 4. VERIFY    every picked title must be in the retrieved set
+                  → one corrective retry → else fall back to scorer output
+```
+
+**Guardrails and logging**
+
+- Queries that are empty or longer than 500 characters are rejected with exit code 2.
+- If the API key is missing, the API returns an error, the network fails, Claude refuses, or the JSON is malformed, the app falls back to the deterministic recommender instead of crashing.
+- Requests use the API's server-side refusal fallback (`fallbacks: "default"`).
+- Every run writes to `logs/app.log`: the parsed profile, the retrieved song IDs, the notes used, the latency of each Claude call, and the result of each grounding check. Add `-v` to also print these logs to the console.
+- The model defaults to `claude-opus-5-5`. You can override it with `ANTHROPIC_MODEL`.
 
 ---
 
