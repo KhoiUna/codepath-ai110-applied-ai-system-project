@@ -1,0 +1,63 @@
+%% System diagram: Music Recommender with RAG "Ask" mode
+%% Flow: INPUT -> PROCESS (parse, retrieve, generate, verify) -> OUTPUT
+%% Human and testing checkpoints are shown in the CHECKS group.
+flowchart TD
+    %% ---------- INPUT ----------
+    subgraph INPUT["INPUT"]
+        U(["👤 User<br/>free-text request<br/>python -m src.main --ask"])
+        CSV[("data/songs.csv<br/>song catalog")]
+        KB[("data/genre_notes.md<br/>genre/mood knowledge base")]
+    end
+
+    %% ---------- PROCESS ----------
+    subgraph PROCESS["PROCESS: src/rag.py MusicRAG.ask()"]
+        G1{"Guardrail<br/>validate_query<br/>empty or over 500 chars?"}
+        P["1. PARSER<br/>Claude → taste profile<br/>JSON schema, catalog labels only"]
+        KP["Fallback parser<br/>keyword_parse<br/>no API key or API error"]
+        G2["Guardrail<br/>sanitize_profile<br/>clamp energy, drop unknown labels"]
+        R["2. RETRIEVER<br/>recommend_songs + score_song<br/>top-k songs + reasons<br/>retrieve_notes"]
+        GEN["3. GENERATOR<br/>Claude writes picks<br/>using ONLY retrieved context"]
+        V{"4. EVALUATOR<br/>check_grounding<br/>all picks in retrieved set?"}
+        RETRY["Corrective retry<br/>max 1"]
+        FB["Deterministic fallback<br/>scorer results"]
+    end
+
+    %% ---------- OUTPUT ----------
+    subgraph OUTPUT["OUTPUT"]
+        OUT(["Terminal answer<br/>AI summary + grounded picks<br/>or scorer ranking + warnings"])
+        LOG[("logs/app.log<br/>profile, song ids,<br/>latency, grounding result")]
+    end
+
+    %% ---------- CHECKS ----------
+    subgraph CHECKS["HUMAN + TESTING CHECKS"]
+        T["🧪 pytest<br/>tests/test_rag.py, mocked Claude<br/>tests/test_recommender.py"]
+        H(["👤 Developer review<br/>reads logs and output,<br/>tunes weights and notes"])
+    end
+
+    U --> G1
+    G1 -- "invalid" --> ERR(["Error message, exit 2"])
+    G1 -- "valid" --> P
+    P -- "Claude unavailable" --> KP
+    P --> G2
+    KP --> G2
+    G2 --> R
+    CSV --> R
+    KB --> R
+    R --> GEN
+    R -. "offline mode" .-> FB
+    GEN --> V
+    V -- "grounded" --> OUT
+    V -- "hallucinated song" --> RETRY
+    RETRY --> GEN
+    RETRY -- "fails again" --> FB
+    GEN -. "API error / refusal" .-> FB
+    FB --> OUT
+
+    P -.-> LOG
+    R -.-> LOG
+    V -.-> LOG
+
+    T -. "verifies guardrails,<br/>grounding, fallbacks" .-> PROCESS
+    LOG -.-> H
+    OUT -.-> H
+    U -. "judges if picks fit" .-> OUT
