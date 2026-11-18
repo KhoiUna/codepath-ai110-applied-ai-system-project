@@ -1,6 +1,9 @@
 import csv
+import logging
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # Column types for data/songs.csv; anything not listed stays a string.
 INT_FIELDS = ("id",)
@@ -71,7 +74,7 @@ def load_songs(csv_path: str) -> List[Dict]:
     converted (id -> int, audio features -> float) so they can be used in
     scoring math; text columns are stripped of surrounding whitespace.
     """
-    print(f"Loading songs from {csv_path}...")
+    logger.info("Loading songs from %s", csv_path)
     songs: List[Dict] = []
 
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -96,7 +99,7 @@ def load_songs(csv_path: str) -> List[Dict]:
                 raise ValueError(
                     f"{csv_path}, line {line_num}: bad or missing value ({e})") from e
             songs.append(song)
-    print(f"Loaded {len(songs)} songs.")
+    logger.info("Loaded %d songs", len(songs))
     return songs
 
 
@@ -188,8 +191,8 @@ def print_profile(user_prefs: dict) -> None:
     print("=" * WIDTH)
     print("  🎵  MUSIC RECOMMENDER")
     print("=" * WIDTH)
-    print(f"  Genre: {user_prefs['favorite_genre']}  |  "
-          f"Mood: {user_prefs['favorite_mood']}  |  "
+    print(f"  Genre: {user_prefs['favorite_genre'] or 'any'}  |  "
+          f"Mood: {user_prefs['favorite_mood'] or 'any'}  |  "
           f"Energy: {user_prefs['target_energy']:.2f}  |  "
           f"Acoustic: {'yes' if user_prefs['likes_acoustic'] else 'no'}")
     print("=" * WIDTH)
